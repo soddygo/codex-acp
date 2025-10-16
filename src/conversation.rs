@@ -748,6 +748,7 @@ impl PromptState {
             command,
             cwd,
             reason,
+            ..
         } = event;
 
         // Create a new tool call for the command execution
