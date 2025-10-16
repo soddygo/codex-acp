@@ -54,9 +54,31 @@ impl CodexAgent {
         let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
 
-        let model_presets = Rc::new(builtin_model_presets(
+        let mut builtin_presets = builtin_model_presets(
             auth_manager.auth().map(|auth| auth.mode),
-        ));
+        );
+
+        // Add custom model preset for the configured model if it's not in the builtin presets
+        let custom_model = config.model.clone();
+        let has_custom_model = !builtin_presets.iter().any(|preset| preset.model == custom_model);
+
+        if has_custom_model {
+            // Create a custom model preset for the configured model
+            // We need to leak the strings to get 'static lifetime for ModelPreset
+            let model_id = format!("custom-{}", custom_model);
+            let description = format!("Custom model: {}", custom_model);
+
+            let custom_preset = ModelPreset {
+                id: model_id.leak(),
+                label: custom_model.clone().leak(),
+                description: description.leak(),
+                model: custom_model.leak(),
+                effort: config.model_reasoning_effort,
+            };
+            builtin_presets.push(custom_preset);
+        }
+
+        let model_presets = Rc::new(builtin_presets);
         let local_spawner = LocalSpawner::new();
         let capabilities_clone = client_capabilities.clone();
         let conversation_manager =
