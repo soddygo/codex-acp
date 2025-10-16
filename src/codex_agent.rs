@@ -51,7 +51,7 @@ pub struct CodexAgent {
 impl CodexAgent {
     /// Create a new `CodexAgent` with the given configuration
     pub fn new(config: Config) -> Self {
-        let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
+        let auth_manager = AuthManager::shared(config.codex_home.clone(), true);
         let client_capabilities: Arc<Mutex<ClientCapabilities>> = Arc::default();
 
         let mut builtin_presets = builtin_model_presets(
