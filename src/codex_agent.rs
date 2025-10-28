@@ -6,7 +6,7 @@ use agent_client_protocol::{
     SessionId, SetSessionModeRequest, SetSessionModeResponse, SetSessionModelRequest,
     SetSessionModelResponse, V1,
 };
-use codex_common::model_presets::{ModelPreset, builtin_model_presets};
+use codex_common::model_presets::{ModelPreset, builtin_model_presets, ReasoningEffortPreset};
 use codex_core::{
     ConversationManager, NewConversation,
     auth::{AuthManager, read_codex_api_key_from_env, read_openai_api_key_from_env},
@@ -22,6 +22,7 @@ use std::{
     rc::Rc,
     sync::{Arc, Mutex},
 };
+use codex_protocol::config_types::ReasoningEffort;
 use tracing::{debug, info};
 
 use crate::{
@@ -70,10 +71,29 @@ impl CodexAgent {
 
             let custom_preset = ModelPreset {
                 id: model_id.leak(),
-                label: custom_model.clone().leak(),
+                display_name: custom_model.clone().leak(),
                 description: description.leak(),
                 model: custom_model.leak(),
-                effort: config.model_reasoning_effort,
+                is_default:true,
+                default_reasoning_effort: ReasoningEffort::Medium,
+                supported_reasoning_efforts: &[
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::Minimal,
+                        description: "Fastest responses with little reasoning",
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::Low,
+                        description: "Balances speed with some reasoning; useful for straightforward queries and short explanations",
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::Medium,
+                        description: "Provides a solid balance of reasoning depth and latency for general-purpose tasks",
+                    },
+                    ReasoningEffortPreset {
+                        effort: ReasoningEffort::High,
+                        description: "Maximizes reasoning depth for complex or ambiguous problems",
+                    },
+                ]
             };
             builtin_presets.push(custom_preset);
         }
