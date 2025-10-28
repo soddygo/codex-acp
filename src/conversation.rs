@@ -8,15 +8,15 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Annotations, AudioContent, AvailableCommand, AvailableCommandInput, BlobResourceContents,
-    Client, ClientCapabilities, ContentBlock, Diff, EmbeddedResource, EmbeddedResourceResource,
-    Error, ImageContent, LoadSessionResponse, ModelId, ModelInfo, PermissionOption,
-    PermissionOptionId, PermissionOptionKind, Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus,
-    PromptRequest, RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    ResourceLink, SessionId, SessionMode, SessionModeId, SessionModeState, SessionModelState,
-    SessionNotification, SessionUpdate, StopReason, TerminalId, TextContent, TextResourceContents,
-    ToolCall, ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind,
+    Annotations, AudioContent, AvailableCommand, AvailableCommandInput, AvailableCommandsUpdate,
+    BlobResourceContents, Client, ClientCapabilities, ContentBlock, ContentChunk, Diff,
+    EmbeddedResource, EmbeddedResourceResource, Error, ImageContent, LoadSessionResponse, ModelId,
+    ModelInfo, PermissionOption, PermissionOptionId, PermissionOptionKind, Plan, PlanEntry,
+    PlanEntryPriority, PlanEntryStatus, PromptRequest, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, ResourceLink, SessionId, SessionMode,
+    SessionModeId, SessionModeState, SessionModelState, SessionNotification, SessionUpdate,
+    StopReason, TerminalId, TextContent, TextResourceContents, ToolCall, ToolCallContent,
+    ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use codex_common::{
     approval_presets::{ApprovalPreset, builtin_approval_presets},
@@ -31,11 +31,11 @@ use codex_core::{
         AgentReasoningRawContentDeltaEvent, AgentReasoningSectionBreakEvent,
         ApplyPatchApprovalRequestEvent, ErrorEvent, Event, EventMsg, ExecApprovalRequestEvent,
         ExecCommandBeginEvent, ExecCommandEndEvent, ExecCommandOutputDeltaEvent,
-        ExitedReviewModeEvent, FileChange, InputItem, ListCustomPromptsResponseEvent,
-        McpInvocation, McpToolCallBeginEvent, McpToolCallEndEvent, Op, PatchApplyBeginEvent,
-        PatchApplyEndEvent, ReviewDecision, ReviewOutputEvent, ReviewRequest, StreamErrorEvent,
-        TaskCompleteEvent, TaskStartedEvent, TurnAbortedEvent, UserMessageEvent,
-        ViewImageToolCallEvent, WebSearchBeginEvent, WebSearchEndEvent,
+        ExitedReviewModeEvent, FileChange, ItemCompletedEvent, ItemStartedEvent,
+        ListCustomPromptsResponseEvent, McpInvocation, McpToolCallBeginEvent, McpToolCallEndEvent,
+        Op, PatchApplyBeginEvent, PatchApplyEndEvent, ReviewDecision, ReviewOutputEvent,
+        ReviewRequest, StreamErrorEvent, TaskCompleteEvent, TaskStartedEvent, TurnAbortedEvent,
+        UserMessageEvent, ViewImageToolCallEvent, WebSearchBeginEvent, WebSearchEndEvent,
     },
     review_format::format_review_findings_block,
 };
@@ -44,6 +44,7 @@ use codex_protocol::{
     custom_prompts::CustomPrompt,
     parse_command::ParsedCommand,
     plan_tool::{PlanItemArg, StepStatus, UpdatePlanArgs},
+    user_input::UserInput,
 };
 use itertools::Itertools;
 use mcp_types::CallToolResult;
@@ -342,12 +343,15 @@ impl PromptState {
             }) => {
                 info!("Task started with context window of {model_context_window:?}");
             }
+            EventMsg::ItemStarted(ItemStartedEvent { thread_id, turn_id, item }) => {
+
+                info!("Item started with thread_id: {thread_id}, turn_id: {turn_id}, item: {item:?}");
+            }
             EventMsg::UserMessage(UserMessageEvent {
                 message,
-                kind,
                 images: _,
             }) => {
-                info!("User message {kind:?} echoed: {message:?}");
+                info!("User message: {message:?}");
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
                 // Send this to the client via session/update notification
@@ -429,6 +433,9 @@ impl PromptState {
                 info!("Patch apply end: call_id={}, success={}", event.call_id, event.success);
                 self.end_patch_apply(client, event).await;
             }
+            EventMsg::ItemCompleted(ItemCompletedEvent { thread_id, turn_id, item }) => {
+                info!("Item completed: thread_id={}, turn_id={}, item={:?}", thread_id, turn_id, item);
+            }
             EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message}) => {
                 info!(
                     "Task completed successfully after {} events. Last agent message: {last_agent_message:?}", self.event_count
@@ -508,14 +515,13 @@ impl PromptState {
             | EventMsg::TurnDiff(..)
             // Revisit when we can emit status updates
             | EventMsg::BackgroundEvent(..)
+            | EventMsg::RawResponseItem(..)
             | EventMsg::SessionConfigured(..) => {}
 
             // Unexpected events for this submission
             e @ (EventMsg::McpListToolsResponse(..)
             // returned from Op::ListCustomPrompts, ignore
             | EventMsg::ListCustomPromptsResponse(..)
-            // returned from Op::GetPath, ignore
-            | EventMsg::ConversationPath(..)
             // Used for returning a single history entry
             | EventMsg::GetHistoryEntryResponse(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -751,6 +757,7 @@ impl PromptState {
             cwd,
             reason,
             parsed_cmd,
+            risk,
         } = event;
 
         // Create a new tool call for the command execution
@@ -770,6 +777,26 @@ impl PromptState {
             file_extension,
         });
 
+        let risk = risk.map(|risk| {
+            let mut str = format!(
+                "Risk Assessment: {}\nRisk Level: {}",
+                risk.description,
+                risk.risk_level.as_str()
+            );
+            if !risk.risk_categories.is_empty() {
+                str.push_str("\nRisk Categories:");
+                str.push_str(&risk.risk_categories.iter().map(|c| c.as_str()).join(", "));
+            }
+            str
+        });
+
+        let content = match (reason, risk) {
+            (Some(reason), Some(risk)) => Some(vec![[reason, risk].join("\n").into()]),
+            (Some(reason), None) => Some(vec![reason.into()]),
+            (None, Some(risk)) => Some(vec![risk.into()]),
+            (None, None) => None,
+        };
+
         let response = client
             .request_permission(
                 ToolCallUpdate {
@@ -778,7 +805,7 @@ impl PromptState {
                         kind: Some(kind),
                         status: Some(ToolCallStatus::Pending),
                         title: Some(title),
-                        content: reason.map(|r| vec![r.into()]),
+                        content,
                         locations: if locations.is_empty() {
                             None
                         } else {
@@ -1170,12 +1197,15 @@ impl TaskState {
             }
             // Expected but ignored
             EventMsg::TaskStarted(..)
+            | EventMsg::ItemStarted(..)
+            | EventMsg::ItemCompleted(..)
             | EventMsg::TokenCount(..)
             | EventMsg::AgentMessageDelta(..)
             | EventMsg::AgentReasoningDelta(..)
             | EventMsg::AgentReasoningRawContent(..)
             | EventMsg::AgentReasoningRawContentDelta(..)
             | EventMsg::AgentReasoningSectionBreak(..)
+            | EventMsg::RawResponseItem(..)
             | EventMsg::BackgroundEvent(..) => {}
             // Unexpected events for this submission
             e @ (EventMsg::UserMessage(..)
@@ -1197,7 +1227,6 @@ impl TaskState {
             | EventMsg::McpListToolsResponse(..)
             | EventMsg::ListCustomPromptsResponse(..)
             | EventMsg::PlanUpdate(..)
-            | EventMsg::ConversationPath(..)
             | EventMsg::EnteredReviewMode(..)
             | EventMsg::ExitedReviewMode(..)) => {
                 warn!("Unexpected event: {:?}", e);
@@ -1262,24 +1291,26 @@ impl SessionClient {
     }
 
     async fn send_agent_text(&self, text: impl Into<String>) {
-        self.send_notification(SessionUpdate::AgentMessageChunk {
+        self.send_notification(SessionUpdate::AgentMessageChunk(ContentChunk {
             content: ContentBlock::Text(TextContent {
                 text: text.into(),
                 annotations: None,
                 meta: None,
             }),
-        })
+            meta: None,
+        }))
         .await;
     }
 
     async fn send_agent_thought(&self, text: impl Into<String>) {
-        self.send_notification(SessionUpdate::AgentThoughtChunk {
+        self.send_notification(SessionUpdate::AgentThoughtChunk(ContentChunk {
             content: ContentBlock::Text(TextContent {
                 text: text.into(),
                 annotations: None,
                 meta: None,
             }),
-        })
+            meta: None,
+        }))
         .await;
     }
 
@@ -1418,9 +1449,12 @@ impl<A: Auth> ConversationActor<A> {
                     );
 
                     client
-                        .send_notification(SessionUpdate::AvailableCommandsUpdate {
-                            available_commands,
-                        })
+                        .send_notification(SessionUpdate::AvailableCommandsUpdate(
+                            AvailableCommandsUpdate {
+                                available_commands,
+                                meta: None,
+                            },
+                        ))
                         .await;
                 });
             }
@@ -1535,48 +1569,58 @@ impl<A: Auth> ConversationActor<A> {
         })
     }
 
-    fn find_model_preset(&self) -> Option<&ModelPreset> {
-        if let Some(preset) = self.model_presets.iter().find(|preset| {
-            preset.model == self.config.model && preset.effort == self.config.model_reasoning_effort
-        }) {
-            return Some(preset);
-        }
+    fn find_current_model(&self) -> Option<ModelId> {
+        let preset = self
+            .model_presets
+            .iter()
+            .find(|preset| preset.model == self.config.model)?;
 
-        // If we didn't find it, and it is set to none, see if we can find one with the default value
-        if self.config.model_reasoning_effort.is_none()
-            && let Some(preset) = self.model_presets.iter().find(|preset| {
-                preset.model == self.config.model
-                    && preset.effort == Some(ReasoningEffort::default())
+        let effort = self
+            .config
+            .model_reasoning_effort
+            .and_then(|effort| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .find_map(|e| (e.effort == effort).then_some(effort))
             })
-        {
-            return Some(preset);
-        }
+            .unwrap_or(preset.default_reasoning_effort);
 
-        None
+        Some(Self::model_id(preset.id, effort))
+    }
+
+    fn model_id(id: &'static str, effort: ReasoningEffort) -> ModelId {
+        ModelId(format!("{id}/{effort}").into())
+    }
+
+    fn parse_model_id(id: ModelId) -> Result<(String, ReasoningEffort), Error> {
+        let Some((model, reasoning)) = id.0.split_once('/') else {
+            return Err(Error::internal_error().with_data(format!("Invalid model ID: {id}")));
+        };
+        let reasoning = serde_json::from_value(reasoning.into()).map_err(|_| {
+            Error::internal_error().with_data(format!("Invalid reasoning effort: {reasoning}"))
+        })?;
+        Ok((model.to_owned(), reasoning))
     }
 
     fn models(&self) -> Result<SessionModelState, Error> {
-        let current_model_id = self
-            .find_model_preset()
-            .map(|preset| ModelId(preset.id.into()))
-            .ok_or_else(|| {
-                anyhow::anyhow!("No valid model preset for model {}", self.config.model)
-            })?;
+        let current_model_id = self.find_current_model().ok_or_else(|| {
+            anyhow::anyhow!("No valid model preset for model {}", self.config.model)
+        })?;
 
         let available_models = self
             .model_presets
             .iter()
-            .map(|preset| ModelInfo {
-                model_id: ModelId(preset.id.into()),
-                name: preset.label.into(),
-                description: Some(
-                    preset
-                        .description
-                        .strip_prefix("— ")
-                        .unwrap_or(preset.description)
-                        .into(),
-                ),
-                meta: None,
+            .flat_map(|preset| {
+                preset
+                    .supported_reasoning_efforts
+                    .iter()
+                    .map(|effort| ModelInfo {
+                        model_id: Self::model_id(preset.id, effort.effort),
+                        name: format!("{} ({})", preset.display_name, effort.effort),
+                        description: Some(format!("{} {}", preset.description, effort.description)),
+                        meta: None,
+                    })
             })
             .collect();
 
@@ -1608,7 +1652,7 @@ impl<A: Auth> ConversationActor<A> {
                 "compact" => op = Op::Compact,
                 "init" => {
                     op = Op::UserInput {
-                        items: vec![InputItem::Text {
+                        items: vec![UserInput::Text {
                             text: INIT_COMMAND_PROMPT.into(),
                         }],
                     }
@@ -1665,7 +1709,7 @@ impl<A: Auth> ConversationActor<A> {
                             .map_err(|e| Error::invalid_params().with_data(e.user_message()))?
                     {
                         op = Op::UserInput {
-                            items: vec![InputItem::Text { text: prompt }],
+                            items: vec![UserInput::Text { text: prompt }],
                         }
                     } else {
                         op = Op::UserInput { items }
@@ -1724,26 +1768,22 @@ impl<A: Auth> ConversationActor<A> {
     }
 
     async fn handle_set_model(&mut self, model: ModelId) -> Result<(), Error> {
-        let preset = self
-            .model_presets
-            .iter()
-            .find(|p| p.id == model.0.as_ref())
-            .ok_or_else(|| Error::invalid_params().with_data("Model not found"))?;
+        let (model, effort) = Self::parse_model_id(model)?;
 
         self.conversation
             .submit(Op::OverrideTurnContext {
                 cwd: None,
                 approval_policy: None,
                 sandbox_policy: None,
-                model: Some(preset.model.into()),
-                effort: Some(preset.effort),
+                model: Some(model.clone()),
+                effort: Some(Some(effort)),
                 summary: None,
             })
             .await
             .map_err(|e| Error::from(anyhow::anyhow!(e)))?;
 
-        self.config.model = preset.model.into();
-        self.config.model_reasoning_effort = preset.effort;
+        self.config.model = model;
+        self.config.model_reasoning_effort = Some(effort);
 
         Ok(())
     }
@@ -1765,14 +1805,14 @@ impl<A: Auth> ConversationActor<A> {
     }
 }
 
-fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<InputItem> {
+fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<UserInput> {
     prompt
         .into_iter()
         .filter_map(|block| match block {
-            ContentBlock::Text(text_block) => Some(InputItem::Text {
+            ContentBlock::Text(text_block) => Some(UserInput::Text {
                 text: text_block.text,
             }),
-            ContentBlock::Image(image_block) => Some(InputItem::Image {
+            ContentBlock::Image(image_block) => Some(UserInput::Image {
                 image_url: format!("data:{};base64,{}", image_block.mime_type, image_block.data),
             }),
             ContentBlock::ResourceLink(ResourceLink {
@@ -1784,7 +1824,7 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<InputItem> {
                 title: _,
                 uri,
                 meta: _,
-            }) => Some(InputItem::Text {
+            }) => Some(UserInput::Text {
                 text: format_uri_as_link(Some(name), uri),
             }),
             ContentBlock::Resource(EmbeddedResource {
@@ -1797,7 +1837,7 @@ fn build_prompt_items(prompt: Vec<ContentBlock>) -> Vec<InputItem> {
                         meta: _,
                     }),
                 meta: _,
-            }) => Some(InputItem::Text {
+            }) => Some(UserInput::Text {
                 text: format!(
                     "{}\n<context ref=\"{uri}\">\n${text}\n</context>",
                     format_uri_as_link(None, uri.clone())
@@ -1960,9 +2000,9 @@ fn extract_tool_call_content_from_changes(
 }
 
 /// Checks if a prompt is slash command
-fn extract_slash_command(content: &[InputItem]) -> Option<(&str, &str)> {
+fn extract_slash_command(content: &[UserInput]) -> Option<(&str, &str)> {
     let line = content.first().and_then(|block| match block {
-        InputItem::Text { text, .. } => Some(text),
+        UserInput::Text { text, .. } => Some(text),
         _ => None,
     })?;
 
@@ -2012,9 +2052,10 @@ mod tests {
         assert_eq!(notifications.len(), 1);
         assert!(matches!(
             &notifications[0].update,
-            SessionUpdate::AgentMessageChunk {
-                content: ContentBlock::Text(TextContent { text, .. })
-            } if text == "Hi"
+            SessionUpdate::AgentMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            }) if text == "Hi"
         ));
 
         Ok(())
@@ -2051,9 +2092,10 @@ mod tests {
         assert_eq!(notifications.len(), 1);
         assert!(matches!(
             &notifications[0].update,
-            SessionUpdate::AgentMessageChunk {
-                content: ContentBlock::Text(TextContent { text, .. })
-            } if text == "Compact task completed"
+            SessionUpdate::AgentMessageChunk(ContentChunk {
+                content: ContentBlock::Text(TextContent { text, .. }),
+                ..
+            }) if text == "Compact task completed"
         ));
         let ops = conversation.ops.lock().unwrap();
         assert_eq!(ops.as_slice(), &[Op::Compact]);
@@ -2093,9 +2135,9 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == INIT_COMMAND_PROMPT // we echo the prompt
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }), ..
+                }) if text == INIT_COMMAND_PROMPT // we echo the prompt
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2103,7 +2145,7 @@ mod tests {
         assert_eq!(
             ops.as_slice(),
             &[Op::UserInput {
-                items: vec![InputItem::Text {
+                items: vec![UserInput::Text {
                     text: INIT_COMMAND_PROMPT.to_string()
                 }]
             }],
@@ -2145,9 +2187,10 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == "current changes" // we echo the prompt
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "current changes" // we echo the prompt
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2199,9 +2242,10 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == "Review what we did in agents.md" // we echo the prompt
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "Review what we did in agents.md" // we echo the prompt
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2253,9 +2297,10 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == "commit 123456" // we echo the prompt
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "commit 123456" // we echo the prompt
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2307,9 +2352,10 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == "changes against 'feature'" // we echo the prompt
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "changes against 'feature'" // we echo the prompt
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2369,9 +2415,10 @@ mod tests {
         assert!(
             matches!(
                 &notifications[0].update,
-                SessionUpdate::AgentMessageChunk {
-                    content: ContentBlock::Text(TextContent { text, .. })
-                } if text == "Custom prompt with foo arg."
+                SessionUpdate::AgentMessageChunk(ContentChunk {
+                    content: ContentBlock::Text(TextContent { text, .. }),
+                    ..
+                }) if text == "Custom prompt with foo arg."
             ),
             "notifications don't match {notifications:?}"
         );
@@ -2380,7 +2427,7 @@ mod tests {
         assert_eq!(
             ops.as_slice(),
             &[Op::UserInput {
-                items: vec![InputItem::Text {
+                items: vec![UserInput::Text {
                     text: "Custom prompt with foo arg.".into()
                 }]
             }],
@@ -2463,7 +2510,7 @@ mod tests {
                     let prompt = items
                         .into_iter()
                         .map(|i| match i {
-                            InputItem::Text { text } => text,
+                            UserInput::Text { text } => text,
                             _ => unimplemented!(),
                         })
                         .join("\n");

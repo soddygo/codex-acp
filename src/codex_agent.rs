@@ -1,10 +1,10 @@
 use agent_client_protocol::{
     Agent, AgentCapabilities, AuthMethod, AuthMethodId, AuthenticateRequest, AuthenticateResponse,
-    CancelNotification, ClientCapabilities, Error, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, NewSessionRequest,
-    NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, SessionId,
-    SetSessionModeRequest, SetSessionModeResponse, SetSessionModelRequest, SetSessionModelResponse,
-    V1,
+    CancelNotification, ClientCapabilities, Error, Implementation, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse,
+    SessionId, SetSessionModeRequest, SetSessionModeResponse, SetSessionModelRequest,
+    SetSessionModelResponse, V1,
 };
 use codex_common::model_presets::{ModelPreset, builtin_model_presets};
 use codex_core::{
@@ -118,13 +118,16 @@ impl CodexAgent {
 #[async_trait::async_trait(?Send)]
 impl Agent for CodexAgent {
     async fn initialize(&self, request: InitializeRequest) -> Result<InitializeResponse, Error> {
-        debug!(
-            "Received initialize request with protocol version {:?}",
-            request.protocol_version
-        );
+        let InitializeRequest {
+            protocol_version,
+            client_capabilities,
+            client_info: _, // TODO: save and pass into Codex somehow
+            meta: _,
+        } = request;
+        debug!("Received initialize request with protocol version {protocol_version:?}",);
         let protocol_version = V1;
 
-        *self.client_capabilities.lock().unwrap() = request.client_capabilities;
+        *self.client_capabilities.lock().unwrap() = client_capabilities;
 
         let agent_capabilities = AgentCapabilities {
             load_session: false, // Currently only able to do in-memory... which doesn't help us at the moment
@@ -135,7 +138,7 @@ impl Agent for CodexAgent {
                 meta: None,
             },
             mcp_capabilities: McpCapabilities {
-                http: false,
+                http: true,
                 sse: false,
                 meta: None,
             },
@@ -155,6 +158,11 @@ impl Agent for CodexAgent {
         Ok(InitializeResponse {
             protocol_version,
             agent_capabilities,
+            agent_info: Some(Implementation {
+                name: "codex-acp".into(),
+                title: Some("Codex".into()),
+                version: env!("CARGO_PKG_VERSION").into(),
+            }),
             auth_methods,
             meta: None,
         })
@@ -172,6 +180,7 @@ impl Agent for CodexAgent {
                 let opts = codex_login::ServerOptions::new(
                     self.config.codex_home.clone(),
                     codex_core::auth::CLIENT_ID.to_string(),
+                    None,
                 );
 
                 let server =
@@ -221,7 +230,6 @@ impl Agent for CodexAgent {
         config.use_experimental_use_rmcp_client = true;
         // Make sure we are going through the `apply_patch` code path
         config.include_apply_patch_tool = true;
-        config.include_plan_tool = true;
         config.cwd.clone_from(&cwd);
 
         // Propagate any client-provided MCP servers that codex-rs supports.
@@ -246,6 +254,8 @@ impl Agent for CodexAgent {
                             enabled: true,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
+                            disabled_tools: None,
+                            enabled_tools: None,
                         },
                     );
                 }
@@ -272,6 +282,8 @@ impl Agent for CodexAgent {
                             enabled: true,
                             startup_timeout_sec: None,
                             tool_timeout_sec: None,
+                            disabled_tools: None,
+                            enabled_tools: None,
                         },
                     );
                 }
