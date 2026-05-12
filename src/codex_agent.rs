@@ -116,7 +116,7 @@ impl CodexAgent {
         let agent = self;
         Agent
             .builder()
-            .name("codex-acp")
+            .name("nuwax-codex-acp")
             .on_receive_request(
                 {
                     let agent = agent.clone();
@@ -457,7 +457,7 @@ impl CodexAgent {
 
         Ok(InitializeResponse::new(protocol_version)
             .agent_capabilities(agent_capabilities)
-            .agent_info(Implementation::new("codex-acp", env!("CARGO_PKG_VERSION")).title("Codex"))
+            .agent_info(Implementation::new("nuwax-codex-acp", env!("CARGO_PKG_VERSION")).title("Codex"))
             .auth_methods(auth_methods))
     }
 

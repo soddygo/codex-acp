@@ -1,20 +1,20 @@
 [package]
-name = "codex-acp"
-version = "0.14.0"
+name = "nuwax-codex-acp"
+version = "0.15.0"
 edition = "2024"
-authors = ["Zed <hi@zed.dev>"]
+authors = ["soddygo <soddygo@qq.com>", "Zed <hi@zed.dev>"]
 license = "Apache-2.0"
-description = "An ACP-compatible coding agent powered by Codex"
-repository = "https://github.com/zed-industries/codex-acp"
-homepage = "https://github.com/zed-industries/codex-acp"
+description = "An ACP-compatible coding agent powered by Codex, with domestic (Chinese) LLM support"
+repository = "https://github.com/soddygo/codex-acp"
+homepage = "https://github.com/soddygo/codex-acp"
 
 [[bin]]
-name = "codex-acp"
+name = "nuwax-codex-acp"
 path = "src/main.rs"
 
 [lib]
 doctest = false
-name = "codex_acp"
+name = "nuwax_codex_acp"
 path = "src/lib.rs"
 
 [dependencies]

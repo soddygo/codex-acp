@@ -12,6 +12,37 @@ use tracing_subscriber::EnvFilter;
 mod codex_agent;
 mod thread;
 
+/// Environment variable names for agent configuration.
+/// These allow configuring different LLM providers per process.
+const ENV_CODEX_MODEL: &str = "CODEX_MODEL";
+const ENV_CODEX_BASE_URL: &str = "CODEX_BASE_URL";
+
+/// Apply environment variable overrides to the loaded configuration.
+/// This enables per-process configuration of the LLM model,
+/// allowing multiple agents with different providers to run on the same system.
+fn apply_env_overrides(mut config: Config) -> Config {
+    if let Some(model) = std::env::var(ENV_CODEX_MODEL).ok() {
+        let model = model.trim();
+        if !model.is_empty() {
+            config.model = Some(model.to_string());
+        }
+    }
+
+    if let Some(base_url) = std::env::var(ENV_CODEX_BASE_URL).ok() {
+        let base_url = base_url.trim();
+        if !base_url.is_empty() {
+            let base_url = base_url.to_string();
+            if let Some(provider) = config.model_providers.get_mut("openai") {
+                provider.base_url = Some(base_url.clone());
+            }
+            if config.model_provider_id == "openai" {
+                config.model_provider.base_url = Some(base_url);
+            }
+        }
+    }
+    config
+}
+
 /// Run the Codex ACP agent.
 ///
 /// This sets up an ACP agent that communicates over stdio, bridging
@@ -53,6 +84,9 @@ pub async fn run_main(
                     format!("error loading config: {e}"),
                 )
             })?;
+
+    // Apply environment variable overrides (CODEX_BASE_URL, CODEX_MODEL, etc.)
+    let config = apply_env_overrides(config);
     // Apply residency requirement so the HTTP client sends the
     // x-openai-internal-codex-residency header on all requests.
     codex_login::default_client::set_default_client_residency_requirement(

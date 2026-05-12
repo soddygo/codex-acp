@@ -1518,42 +1518,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e9b18233253483ce2f65329a24072ec414db782531bdbb7d0bbc4bd2ce6b7e21"
 
 [[package]]
-name = "codex-acp"
-version = "0.14.0"
-dependencies = [
- "agent-client-protocol",
- "anyhow",
- "clap",
- "codex-apply-patch",
- "codex-arg0",
- "codex-config",
- "codex-core",
- "codex-exec-server",
- "codex-login",
- "codex-mcp-server",
- "codex-models-manager",
- "codex-protocol",
- "codex-shell-command",
- "codex-utils-approval-presets",
- "codex-utils-cli",
- "diffy",
- "gix-actor",
- "heck",
- "icu_calendar",
- "itertools 0.14.0",
- "regex-lite",
- "serde",
- "serde_json",
- "shlex",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "unicode-segmentation",
- "uuid",
-]
-
-[[package]]
 name = "codex-agent-identity"
 version = "0.129.0"
 source = "git+https://github.com/openai/codex?tag=rust-v0.129.0#2808a4deb181e5ca2b1293a1a5980938cb746861"
@@ -6979,6 +6943,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "nuwax-codex-acp"
+version = "0.15.0"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "clap",
+ "codex-apply-patch",
+ "codex-arg0",
+ "codex-config",
+ "codex-core",
+ "codex-exec-server",
+ "codex-login",
+ "codex-mcp-server",
+ "codex-models-manager",
+ "codex-protocol",
+ "codex-shell-command",
+ "codex-utils-approval-presets",
+ "codex-utils-cli",
+ "diffy",
+ "gix-actor",
+ "heck",
+ "icu_calendar",
+ "itertools 0.14.0",
+ "regex-lite",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-segmentation",
+ "uuid",
 ]
 
 [[package]]
