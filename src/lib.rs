@@ -21,25 +21,33 @@ const ENV_CODEX_BASE_URL: &str = "CODEX_BASE_URL";
 /// This enables per-process configuration of the LLM model,
 /// allowing multiple agents with different providers to run on the same system.
 fn apply_env_overrides(mut config: Config) -> Config {
-    if let Some(model) = std::env::var(ENV_CODEX_MODEL).ok() {
+    if let Ok(model) = std::env::var(ENV_CODEX_MODEL) {
         let model = model.trim();
         if !model.is_empty() {
             config.model = Some(model.to_string());
         }
     }
 
-    if let Some(base_url) = std::env::var(ENV_CODEX_BASE_URL).ok() {
+    if let Ok(base_url) = std::env::var(ENV_CODEX_BASE_URL) {
         let base_url = base_url.trim();
         if !base_url.is_empty() {
             let base_url = base_url.to_string();
-            if let Some(provider) = config.model_providers.get_mut("openai") {
-                provider.base_url = Some(base_url.clone());
-            }
-            if config.model_provider_id == "openai" {
-                config.model_provider.base_url = Some(base_url);
+            config.model_provider.base_url = Some(base_url.clone());
+            if let Some(provider) = config.model_providers.get_mut(&config.model_provider_id) {
+                provider.base_url = Some(base_url);
             }
         }
     }
+
+    if config.model.is_some() || config.model_provider.base_url.is_some() {
+        tracing::info!(
+            model = %config.model.as_deref().unwrap_or("<unset>"),
+            base_url = %config.model_provider.base_url.as_deref().unwrap_or("<unset>"),
+            provider_id = %config.model_provider_id,
+            "applied environment variable overrides"
+        );
+    }
+
     config
 }
 
