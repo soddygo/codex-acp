@@ -61,9 +61,12 @@ fn apply_env_overrides(mut config: Config) -> Config {
         let provider_info = ModelProviderInfo {
             name: provider_name.unwrap_or_else(|| provider_id.clone()),
             base_url,
-            env_key: api_key,
+            // env_key stores the env var name that codex will read at runtime
+            env_key: Some(ENV_CODEX_API_KEY.to_string()),
             env_key_instructions: None,
-            experimental_bearer_token: None,
+            // Use bearer token for domestic models (codex reads env_key at runtime,
+            // but bearer token allows embedding the key directly)
+            experimental_bearer_token: api_key,
             auth: None,
             aws: None,
             // Use Responses API wire protocol (codex only supports this)
