@@ -6959,6 +6959,7 @@ dependencies = [
  "codex-exec-server",
  "codex-login",
  "codex-mcp-server",
+ "codex-model-provider-info",
  "codex-models-manager",
  "codex-protocol",
  "codex-shell-command",

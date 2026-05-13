@@ -3,6 +3,7 @@
 
 use agent_client_protocol::ByteStreams;
 use codex_core::config::{Config, ConfigOverrides};
+use codex_model_provider_info::ModelProviderInfo;
 use codex_utils_cli::CliConfigOverrides;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,6 +17,9 @@ mod thread;
 /// These allow configuring different LLM providers per process.
 const ENV_CODEX_MODEL: &str = "CODEX_MODEL";
 const ENV_CODEX_BASE_URL: &str = "CODEX_BASE_URL";
+const ENV_CODEX_API_KEY: &str = "CODEX_API_KEY";
+const ENV_CODEX_PROVIDER_ID: &str = "CODEX_PROVIDER_ID";
+const ENV_CODEX_PROVIDER_NAME: &str = "CODEX_PROVIDER_NAME";
 
 /// Apply environment variable overrides to the loaded configuration.
 /// This enables per-process configuration of the LLM model,
@@ -28,7 +32,65 @@ fn apply_env_overrides(mut config: Config) -> Config {
         }
     }
 
-    if let Ok(base_url) = std::env::var(ENV_CODEX_BASE_URL) {
+    let provider_id = std::env::var(ENV_CODEX_PROVIDER_ID)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| config.model_provider_id.clone());
+
+    let provider_name = std::env::var(ENV_CODEX_PROVIDER_NAME)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .map(|v| v.trim().to_string());
+
+    let api_key = std::env::var(ENV_CODEX_API_KEY)
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    let base_url = std::env::var(ENV_CODEX_BASE_URL)
+        .ok()
+        .and_then(|v| {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+
+    if base_url.is_some() || api_key.is_some() {
+        let provider_info = ModelProviderInfo {
+            name: provider_name.unwrap_or_else(|| provider_id.clone()),
+            base_url,
+            env_key: api_key,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            auth: None,
+            aws: None,
+            // Use Responses API wire protocol (codex only supports this)
+            wire_api: Default::default(),
+            query_params: None,
+            // Include version header for debugging/analytics
+            http_headers: Some(
+                [("version".to_string(), env!("CARGO_PKG_VERSION").to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            websocket_connect_timeout_ms: None,
+            // No OpenAI login required; API key is provided via CODEX_API_KEY env var
+            requires_openai_auth: false,
+            // Disable WebSocket transport; most domestic models only support HTTP
+            supports_websockets: false,
+        };
+
+        config.model_provider_id = provider_id.clone();
+        config.model_provider = provider_info.clone();
+        config.model_providers.insert(provider_id, provider_info);
+    } else if let Ok(base_url) = std::env::var(ENV_CODEX_BASE_URL) {
+        // Legacy path: only base_url was set, no api_key → just update existing provider
         let base_url = base_url.trim();
         if !base_url.is_empty() {
             let base_url = base_url.to_string();
@@ -44,6 +106,7 @@ fn apply_env_overrides(mut config: Config) -> Config {
             model = %config.model.as_deref().unwrap_or("<unset>"),
             base_url = %config.model_provider.base_url.as_deref().unwrap_or("<unset>"),
             provider_id = %config.model_provider_id,
+            provider_name = %config.model_provider.name,
             "applied environment variable overrides"
         );
     }
